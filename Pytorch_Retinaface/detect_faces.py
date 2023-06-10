@@ -1,34 +1,25 @@
 import os
-import matplotlib.pyplot as plt
-import time
-from PIL import Image
-import numpy as np
-from numpy import dot
-from numpy.linalg import norm
-import math
-import warnings
-import torch
-import torch.backends.cudnn as cudnn
 import cv2
 import time
+import torch
+import torch.backends.cudnn as cudnn
+import matplotlib.pyplot as plt
+import numpy as np
 
-from data import cfg_mnet, cfg_re50
-from layers.functions.prior_box import PriorBox
-from utils.nms.py_cpu_nms import py_cpu_nms
 from models.retinaface import RetinaFace
-from utils.box_utils import decode, decode_landm
+from data import cfg_mnet, cfg_re50
 from alignment import alignment_procedure
+from layers.functions.prior_box import PriorBox
+from utils.box_utils import decode, decode_landm
+from utils.nms.py_cpu_nms import py_cpu_nms
 
-### 이 코드는 이미지를 입력 받고, 이미지의 얼굴 부분을 검출하고, 눈과 코에 맞춰 얼굴 정렬까지 하는 알고리즘이다.
-### 이 코드를 실행하면, if __name__ == "__main__": 부분의 코드가 실행되며, 얼굴 검출을 할 수 있다.
-
-
+# 이 코드는 RetinaFace를 사용하여 얼굴을 감지하고, 감지된 얼굴을 크롭하고 정렬한다.
 class Face_Dectector:
     def __init__(
         self,
         trained_model="./weights/Resnet50_Final.pth",
         network="resnet50",
-        cpu=True
+        cpu=False
     ):
         self.trained_model = trained_model  # 학습된 모델의 경로
         self.network = network  # 사용할 네트워크의 이름 (resnet50, mobile0.25)
@@ -39,15 +30,24 @@ class Face_Dectector:
         self.vis_thres = 0.5  # 시각화를 위한 임계값
         self.device = torch.device("cpu" if cpu else "cuda")
         self.cfg = self.set_cfg()
+        self.net = self.set_net()
 
     def set_cfg(self):
         if self.network == "mobile0.25":
             return cfg_mnet
         elif self.network == "resnet50":
             return cfg_re50
-        
-    ### Face detection을 위한 함수 ###
 
+    def set_net(self):
+        net = RetinaFace(cfg=self.cfg, phase="test")
+        net = self.load_model(net)
+        net.eval()
+        torch.set_grad_enabled(False)
+        cudnn.benchmark = True
+        net = net.to(self.device)
+        print("Finished loading model!")
+        return net
+        
     def check_keys(self, model, pretrained_state_dict):
         ckpt_keys = set(pretrained_state_dict.keys())
         model_keys = set(model.state_dict().keys())
@@ -66,17 +66,10 @@ class Face_Dectector:
         f = lambda x: x.split(prefix, 1)[-1] if x.startswith(prefix) else x
         return {f(key): value for key, value in state_dict.items()}
 
-    def load_model(self, model, pretrained_path, load_to_cpu):
-        print("Loading pretrained model from {}".format(pretrained_path))
-        if load_to_cpu:
-            pretrained_dict = torch.load(
-                pretrained_path, map_location=lambda storage, loc: storage
-            )
-        else:
-            device = torch.cuda.current_device()
-            pretrained_dict = torch.load(
-                pretrained_path, map_location=lambda storage, loc: storage.cuda(device)
-            )
+
+    def load_model(self, model):
+        print("Loading pretrained model from {}".format(self.trained_model))
+        pretrained_dict = torch.load(self.trained_model, map_location=lambda storage, loc: storage.cuda(self.device) if not self.cpu else storage)
         if "state_dict" in pretrained_dict.keys():
             pretrained_dict = self.remove_prefix(
                 pretrained_dict["state_dict"], "module."
@@ -87,7 +80,7 @@ class Face_Dectector:
         model.load_state_dict(pretrained_dict, strict=False)
         return model
 
-    def detect(self, img_array, net):
+    def detect(self, img_array):
         # testing scale
         resize = 1
 
@@ -105,7 +98,7 @@ class Face_Dectector:
         scale = scale.to(self.device)
 
         tic = time.time()
-        loc, conf, landms = net(img)  # forward pass
+        loc, conf, landms = self.net(img)  # forward pass
         print("net forward time: {:.4f}".format(time.time() - tic))
 
         tic = time.time()
@@ -162,47 +155,48 @@ class Face_Dectector:
         return dets
 
     # 시각화 용도
-    def draw_info(self, img, dets):
+    def draw_info(self, detected_img, dets):
         for b in dets:
             if b[4] < self.vis_thres:  # score
                 continue
             text = "{:.4f}".format(b[4])
             b = list(map(int, b))
-            cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 2)
+            cv2.rectangle(detected_img, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 2)
             cx = b[0]
             cy = b[1] + 12
             cv2.putText(
-                img, text, (cx, cy), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255)
+                detected_img, text, (cx, cy), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255)
             )
 
             # landms
-            cv2.circle(img, (b[5], b[6]), 1, (0, 0, 255), 4)  # 왼쪽 눈
-            cv2.circle(img, (b[7], b[8]), 1, (0, 255, 255), 4)  # 오른쪽 눈
-            cv2.circle(img, (b[9], b[10]), 1, (255, 0, 255), 4)  # 코
-            cv2.circle(img, (b[11], b[12]), 1, (0, 255, 0), 4)  # 오른쪽 입
-            cv2.circle(img, (b[13], b[14]), 1, (255, 0, 0), 4)  # 왼쪽 입
+            cv2.circle(detected_img, (b[5], b[6]), 1, (0, 0, 255), 4)  # 왼쪽 눈
+            cv2.circle(detected_img, (b[7], b[8]), 1, (0, 255, 255), 4)  # 오른쪽 눈
+            cv2.circle(detected_img, (b[9], b[10]), 1, (255, 0, 255), 4)  # 코
+            cv2.circle(detected_img, (b[11], b[12]), 1, (0, 255, 0), 4)  # 오른쪽 입
+            cv2.circle(detected_img, (b[13], b[14]), 1, (255, 0, 0), 4)  # 왼쪽 입
 
-        return img
+        return detected_img
     
-def crop_alignment(img_array, b): # b: 얼굴 정보 데이터
+def crop_alignment(img_array, b, align=True): # b: 얼굴 정보 데이터
     # crop
     facial_img = img_array[int(b[1]) : int(b[3]), int(b[0]) : int(b[2])]
 
     # alignment
-    left_eye = (b[5], b[6])
-    right_eye = (b[7], b[8])
-    nose = (b[9], b[10])
-    facial_img = alignment_procedure(facial_img, left_eye, right_eye, nose)
+    if align:
+        left_eye = (b[5], b[6])
+        right_eye = (b[7], b[8])
+        nose = (b[9], b[10])
+        facial_img = alignment_procedure(facial_img, left_eye, right_eye, nose)
 
     return facial_img[:, :, ::-1] # RGB 색상 변환
 
 
-def extract(img_path, trained_model, align=True, network="resnet50", cpu=True):
+def extract(trained_model, img_path, network="resnet50", align=True, cpu=False):
     """
     Face_Dectector(
-        network="resnet50",
         trained_model="./weights/Resnet50_Final.pth",
-        cpu=True
+        network="resnet50",
+        cpu=False
     )
     """
     
@@ -214,38 +208,24 @@ def extract(img_path, trained_model, align=True, network="resnet50", cpu=True):
     network=network
     align=align
     cpu=cpu
-    
-    cfg = None
-    if network == "mobile0.25":
-        cfg = cfg_mnet
-    elif network == "resnet50":
-        cfg = cfg_re50
 
-    torch.set_grad_enabled(False)
-
-    detector = Face_Dectector(network=network, cpu=cpu, trained_model=trained_model)
-
-    # net and model
-    net = RetinaFace(cfg=cfg, phase="test")
-    net = detector.load_model(net, detector.trained_model, detector.cpu)
-    net.eval()
-    print("Finished loading model!")
-
-    cudnn.benchmark = True
-    device = torch.device("cpu" if detector.cpu else "cuda")
-    net = net.to(device)
+    detector = Face_Dectector(
+        trained_model=trained_model,
+        network=network,
+        cpu=cpu
+    )
 
     ##### 여기 전까지는 미리 실행해놓자 #####
 
     """
-    detect(img_array, net)
+    detect(img_array)
     """
-    dets = detector.detect(img_array, net)
+    dets = detector.detect(img_array)
 
     # crop & alignment
     resp = []
     for b in dets:
-        resp.append(crop_alignment(img_array, b))
+        resp.append(crop_alignment(img_array, b, align=align))
     return resp
 
 def save_img(img, file_name, save_path):
@@ -257,7 +237,7 @@ def save_img(img, file_name, save_path):
 
 
 """
-extract(img_path, trained_model, align=True, network="resnet50", cpu=True)
+extract(img_path, trained_model, align=True, network="resnet50", cpu=False)
 """
 if __name__ == "__main__":
     
@@ -288,9 +268,9 @@ if __name__ == "__main__":
     ## 모델 로드 ##
     """
     Face_Dectector(
-        network="resnet50",
         trained_model="./weights/Resnet50_Final.pth",
-        cpu=True
+        network="resnet50",
+        cpu=False
     )
     """
     img_path = "../../celebrity_dataset/차은우12.jpg"
@@ -299,9 +279,8 @@ if __name__ == "__main__":
 
     trained_model = "./weights/Resnet50_Final.pth"
     network = "resnet50"
+    align=align
     cpu = True
-
-    torch.set_grad_enabled(False)
 
     detector = Face_Dectector(
         trained_model=trained_model,
@@ -309,22 +288,12 @@ if __name__ == "__main__":
         cpu=cpu
     )
 
-    # net and model
-    net = RetinaFace(cfg=detector.cfg, phase="test")
-    net = detector.load_model(net, detector.trained_model, detector.cpu)
-    net.eval()
-    print("Finished loading model!")
-
-    cudnn.benchmark = True
-    device = detector.device
-    net = net.to(device)
-
     ##### 여기 전까지는 미리 실행해놓자 #####
 
     """
     detect(img_array, net)
     """
-    dets = detector.detect(img_array, net)
+    dets = detector.detect(img_array)
 
     # 이미지 위에 bounding box와 랜드마크 표시하기
     detected_img = img_array.copy()
@@ -350,4 +319,4 @@ if __name__ == "__main__":
     # crop & alignment
     faces = []
     for b in dets:
-        faces.append(crop_alignment(img_array, b))
+        faces.append(crop_alignment(img_array, b, align=align))

@@ -1,0 +1,10 @@
+# Python Compiled files
+*.pyc
+
+# Image files
+*.jpg
+*.jpeg
+*.png
+
+# model weight
+Pytorch_Retinaface/weights
