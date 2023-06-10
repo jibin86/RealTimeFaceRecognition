@@ -17,27 +17,35 @@ from layers.functions.prior_box import PriorBox
 from utils.nms.py_cpu_nms import py_cpu_nms
 from models.retinaface import RetinaFace
 from utils.box_utils import decode, decode_landm
+from alignment import alignment_procedure
+
+### 이 코드는 이미지를 입력 받고, 이미지의 얼굴 부분을 검출하고, 눈과 코에 맞춰 얼굴 정렬까지 하는 알고리즘이다.
+### 이 코드를 실행하면, if __name__ == "__main__": 부분의 코드가 실행되며, 얼굴 검출을 할 수 있다.
 
 
-class Args:
+class Face_Dectector:
     def __init__(
         self,
-        network="resnet50",
         trained_model="./weights/Resnet50_Final.pth",
-        cpu=True,
-        save_image=False,
-        show_image=False,
+        network="resnet50",
+        cpu=True
     ):
         self.trained_model = trained_model  # 학습된 모델의 경로
         self.network = network  # 사용할 네트워크의 이름 (resnet50, mobile0.25)
         self.cpu = cpu  # CPU를 사용할지 여부
+
         self.confidence_threshold = 0.02  # 얼굴 검출에 사용할 confidence 임계값
         self.nms_threshold = 0.4  # 비최대 억제(non-maximum suppression)를 위한 임계값
-        self.save_image = save_image  # 이미지를 저장할지 여부
-        self.show_image = show_image
         self.vis_thres = 0.5  # 시각화를 위한 임계값
         self.device = torch.device("cpu" if cpu else "cuda")
+        self.cfg = self.set_cfg()
 
+    def set_cfg(self):
+        if self.network == "mobile0.25":
+            return cfg_mnet
+        elif self.network == "resnet50":
+            return cfg_re50
+        
     ### Face detection을 위한 함수 ###
 
     def check_keys(self, model, pretrained_state_dict):
@@ -79,11 +87,11 @@ class Args:
         model.load_state_dict(pretrained_dict, strict=False)
         return model
 
-    def detect_faces(self, img_raw, cfg, net):
+    def detect(self, img_array, net):
         # testing scale
         resize = 1
 
-        img = np.float32(img_raw)
+        img = np.float32(img_array)
         if resize != 1:
             img = cv2.resize(
                 img, None, None, fx=resize, fy=resize, interpolation=cv2.INTER_LINEAR
@@ -101,15 +109,15 @@ class Args:
         print("net forward time: {:.4f}".format(time.time() - tic))
 
         tic = time.time()
-        priorbox = PriorBox(cfg, image_size=(im_height, im_width))
+        priorbox = PriorBox(self.cfg, image_size=(im_height, im_width))
         priors = priorbox.forward()
         priors = priors.to(self.device)
         prior_data = priors.data
-        boxes = decode(loc.data.squeeze(0), prior_data, cfg["variance"])
+        boxes = decode(loc.data.squeeze(0), prior_data, self.cfg["variance"])
         boxes = boxes * scale / resize
         boxes = boxes.cpu().numpy()
         scores = conf.squeeze(0).data.cpu().numpy()[:, 1]
-        landms = decode_landm(landms.data.squeeze(0), prior_data, cfg["variance"])
+        landms = decode_landm(landms.data.squeeze(0), prior_data, self.cfg["variance"])
         scale1 = torch.Tensor(
             [
                 img.shape[3],
@@ -175,52 +183,171 @@ class Args:
             cv2.circle(img, (b[13], b[14]), 1, (255, 0, 0), 4)  # 왼쪽 입
 
         return img
+    
+def crop_alignment(img_array, b): # b: 얼굴 정보 데이터
+    # crop
+    facial_img = img_array[int(b[1]) : int(b[3]), int(b[0]) : int(b[2])]
 
-    def save_img(self, img, file_name, save_path):
-        if not os.path.exists(save_path + "/results/"):
-            os.makedirs(save_path + "/results/")
-        name = save_path + "/results/" + file_name + ".jpg"
-        cv2.imwrite(name, img)
+    # alignment
+    left_eye = (b[5], b[6])
+    right_eye = (b[7], b[8])
+    nose = (b[9], b[10])
+    facial_img = alignment_procedure(facial_img, left_eye, right_eye, nose)
+
+    return facial_img[:, :, ::-1] # RGB 색상 변환
 
 
-if __name__ == "__main__":
-    args = Args(
-        network="resnet50", cpu=True, save_image=False, show_image=True
+def extract(img_path, trained_model, align=True, network="resnet50", cpu=True):
+    """
+    Face_Dectector(
+        network="resnet50",
+        trained_model="./weights/Resnet50_Final.pth",
+        cpu=True
     )
+    """
+    
+    img_path = img_path
+    img_array = np.fromfile(img_path, np.uint8) # 한글 파일 이름 처리
+    img_array = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    
+    trained_model=trained_model
+    network=network
+    align=align
+    cpu=cpu
+    
+    cfg = None
+    if network == "mobile0.25":
+        cfg = cfg_mnet
+    elif network == "resnet50":
+        cfg = cfg_re50
 
     torch.set_grad_enabled(False)
-    cfg = None
 
-    if args.network == "mobile0.25":
-        cfg = cfg_mnet
-    elif args.network == "resnet50":
-        cfg = cfg_re50
+    detector = Face_Dectector(network=network, cpu=cpu, trained_model=trained_model)
 
     # net and model
     net = RetinaFace(cfg=cfg, phase="test")
-    net = args.load_model(net, args.trained_model, args.cpu)
+    net = detector.load_model(net, detector.trained_model, detector.cpu)
     net.eval()
     print("Finished loading model!")
 
     cudnn.benchmark = True
-    device = torch.device("cpu" if args.cpu else "cuda")
+    device = torch.device("cpu" if detector.cpu else "cuda")
     net = net.to(device)
 
     ##### 여기 전까지는 미리 실행해놓자 #####
 
-    image_path = "../../celebrity_dataset/차은우12.jpg"
+    """
+    detect(img_array, net)
+    """
+    dets = detector.detect(img_array, net)
 
-    img_array = np.fromfile(image_path, np.uint8)
-    img_raw = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    dets = args.detect_faces(img_raw, cfg, net)
+    # crop & alignment
+    resp = []
+    for b in dets:
+        resp.append(crop_alignment(img_array, b))
+    return resp
 
-    detected_img = img_raw.copy()
-    detected_img = args.draw_info(detected_img, dets=dets)
+def save_img(img, file_name, save_path):
+    if not os.path.exists(save_path + "/results/"):
+        os.makedirs(save_path + "/results/")
+    name = save_path + "/results/" + file_name + ".jpg"
+    cv2.imwrite(name, img)
+    print('done')
 
-    # 수정된 이미지를 화면에 표시하거나 파일로 저장합니다.
-    if args.show_image:
-        cv2.imshow("image", detected_img)
-        cv2.waitKey(0)
-    if args.save_image:
-        save_path = os.getcwd()
-        args.save_img(detected_img, "detected", save_path)
+
+"""
+extract(img_path, trained_model, align=True, network="resnet50", cpu=True)
+"""
+if __name__ == "__main__":
+    
+    img_path = "../../celebrity_dataset/차은우12.jpg"
+
+    trained_model = 'weights/Resnet50_Final.pth'
+    network="resnet50"
+    align=True
+    cpu=True
+
+    faces = extract(
+        trained_model=trained_model,
+        img_path=img_path,
+        network=network,
+        align=align,
+        cpu=cpu,
+    )
+
+    for face in faces:
+        plt.imshow(face)
+        plt.axis("off")
+        plt.show()
+
+
+# detect 직접 실행
+if __name__ == "__main__":
+    
+    ## 모델 로드 ##
+    """
+    Face_Dectector(
+        network="resnet50",
+        trained_model="./weights/Resnet50_Final.pth",
+        cpu=True
+    )
+    """
+    img_path = "../../celebrity_dataset/차은우12.jpg"
+    img_array = np.fromfile(img_path, np.uint8) # 한글 파일 이름 처리
+    img_array = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+
+    trained_model = "./weights/Resnet50_Final.pth"
+    network = "resnet50"
+    cpu = True
+
+    torch.set_grad_enabled(False)
+
+    detector = Face_Dectector(
+        trained_model=trained_model,
+        network=network,
+        cpu=cpu
+    )
+
+    # net and model
+    net = RetinaFace(cfg=detector.cfg, phase="test")
+    net = detector.load_model(net, detector.trained_model, detector.cpu)
+    net.eval()
+    print("Finished loading model!")
+
+    cudnn.benchmark = True
+    device = detector.device
+    net = net.to(device)
+
+    ##### 여기 전까지는 미리 실행해놓자 #####
+
+    """
+    detect(img_array, net)
+    """
+    dets = detector.detect(img_array, net)
+
+    # 이미지 위에 bounding box와 랜드마크 표시하기
+    detected_img = img_array.copy()
+    detected_img = detector.draw_info(detected_img, dets=dets)
+    
+
+    # 수정된 이미지를 화면에 표시
+    # 시각화 1
+    # plt.imshow(detected_img[:, :, ::-1]) # RGB 색상 변환
+
+    # 시각화 2
+    cv2.imshow("image", detected_img)
+    cv2.waitKey(0)
+
+    # 시각화 3
+    # from google.colab.patches import cv2_imshow
+    # cv2_imshow(detected_img)
+
+    # 저장 경로에 이미지 저장하기
+    save_path = os.getcwd()
+    save_img(detected_img, "detected", save_path)
+
+    # crop & alignment
+    faces = []
+    for b in dets:
+        faces.append(crop_alignment(img_array, b))
