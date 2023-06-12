@@ -18,17 +18,16 @@ class Face_Dectector:
     def __init__(
         self,
         trained_model="./weights/Resnet50_Final.pth",
-        network="resnet50",
-        cpu=False
+        network="resnet50"
     ):
         self.trained_model = trained_model  # 학습된 모델의 경로
         self.network = network  # 사용할 네트워크의 이름 (resnet50, mobile0.25)
-        self.cpu = cpu  # CPU를 사용할지 여부
 
         self.confidence_threshold = 0.02  # 얼굴 검출에 사용할 confidence 임계값
         self.nms_threshold = 0.4  # 비최대 억제(non-maximum suppression)를 위한 임계값
         self.vis_thres = 0.5  # 시각화를 위한 임계값
-        self.device = torch.device("cpu" if cpu else "cuda")
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(self.device)
         self.cfg = self.set_cfg()
         self.net = self.set_net()
 
@@ -69,7 +68,7 @@ class Face_Dectector:
 
     def load_model(self, model):
         print("Loading pretrained model from {}".format(self.trained_model))
-        pretrained_dict = torch.load(self.trained_model, map_location=lambda storage, loc: storage.cuda(self.device) if not self.cpu else storage)
+        pretrained_dict = torch.load(self.trained_model, map_location=self.device)
         if "state_dict" in pretrained_dict.keys():
             pretrained_dict = self.remove_prefix(
                 pretrained_dict["state_dict"], "module."
@@ -179,7 +178,9 @@ class Face_Dectector:
     
 def crop_alignment(img_array, b, align=True): # b: 얼굴 정보 데이터
     # crop
-    facial_img = img_array[int(b[1]) : int(b[3]), int(b[0]) : int(b[2])]
+    img_height, img_width = img_array.shape[:2]
+    x1, y1, x2, y2 = max(int(b[0]), 0), max(int(b[1]), 0), min(int(b[2]), img_width), min(int(b[3]), img_height)
+    facial_img = img_array[y1:y2, x1:x2]
 
     # alignment
     if align:
@@ -191,28 +192,23 @@ def crop_alignment(img_array, b, align=True): # b: 얼굴 정보 데이터
     return facial_img[:, :, ::-1] # RGB 색상 변환
 
 
-def extract(trained_model, img_path, network="resnet50", align=True, cpu=False):
+def extract(trained_model, img_path, network="resnet50", align=True):
     """
     Face_Dectector(
         trained_model="./weights/Resnet50_Final.pth",
-        network="resnet50",
-        cpu=False
+        network="resnet50"
     )
     """
-    
-    img_path = img_path
-    img_array = np.fromfile(img_path, np.uint8) # 한글 파일 이름 처리
-    img_array = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    
     trained_model=trained_model
+    img_path = img_path
     network=network
     align=align
-    cpu=cpu
 
+    img_array = handle_korean_file_name(img_path) # 한글 파일 이름 처리
+    
     detector = Face_Dectector(
         trained_model=trained_model,
-        network=network,
-        cpu=cpu
+        network=network
     )
 
     ##### 여기 전까지는 미리 실행해놓자 #####
@@ -233,27 +229,31 @@ def save_img(img, file_name, save_path):
         os.makedirs(save_path + "/results/")
     name = save_path + "/results/" + file_name + ".jpg"
     cv2.imwrite(name, img)
-    print('done')
+    print('save done')
+    
+def handle_korean_file_name(img_path):
+    img_path = img_path
+    img_array = np.fromfile(img_path, np.uint8) # 한글 파일 이름 처리
+    img_array = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    return img_array
 
 
 """
-extract(img_path, trained_model, align=True, network="resnet50", cpu=False)
+extract(img_path, trained_model, align=True, network="resnet50")
 """
 if __name__ == "__main__":
     
-    img_path = "../../celebrity_dataset/차은우12.jpg"
+    img_path = "../celebrity_dataset/차은우12.jpg"
 
     trained_model = 'weights/Resnet50_Final.pth'
     network="resnet50"
     align=True
-    cpu=True
 
     faces = extract(
         trained_model=trained_model,
         img_path=img_path,
         network=network,
-        align=align,
-        cpu=cpu,
+        align=align
     )
 
     for face in faces:
@@ -269,23 +269,19 @@ if __name__ == "__main__":
     """
     Face_Dectector(
         trained_model="./weights/Resnet50_Final.pth",
-        network="resnet50",
-        cpu=False
+        network="resnet50"
     )
     """
-    img_path = "../../celebrity_dataset/차은우12.jpg"
-    img_array = np.fromfile(img_path, np.uint8) # 한글 파일 이름 처리
-    img_array = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-
     trained_model = "./weights/Resnet50_Final.pth"
+    img_path = "../celebrity_dataset/차은우12.jpg"
     network = "resnet50"
-    align=align
-    cpu = True
+    align=True
+    
+    img_array = handle_korean_file_name(img_path) # 한글 파일 이름 처리
 
     detector = Face_Dectector(
         trained_model=trained_model,
-        network=network,
-        cpu=cpu
+        network=network
     )
 
     ##### 여기 전까지는 미리 실행해놓자 #####
