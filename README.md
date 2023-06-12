@@ -10,3 +10,10 @@ Pretrain model  and trained model are put in [google cloud](https://drive.google
       mobilenetV1X0.25_pretrain.tar
       Resnet50_Final.pth
 ```
+
+## Reference
+### RetinaFace
+- https://github.com/biubug6/Pytorch_Retinaface
+- https://github.com/serengil/retinaface/blob/master/retinaface/commons/postprocess.py (Alignment)
+### ArcFace
+- https://github.com/deepinsight/insightface/tree/master/recognition/arcface_torch
